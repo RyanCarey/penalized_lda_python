@@ -1,2 +1,2 @@
 # penalized_lda_python
-An implementation of penalized linear discriminant analysis in Python
+An implementation of penalized linear discriminant analysis in Python, based on [Witten, Daniela M., and Robert Tibshirani. "Penalized classification using Fisher's linear discriminant." Journal of the Royal Statistical Society: Series B (Statistical Methodology) 73.5 (2011): 753-772.](http://faculty.washington.edu/dwitten/Papers/JRSSBPenLDA.pdf). The original R version is available [here](https://github.com/cran/penalizedLDA/).
