@@ -218,7 +218,7 @@ def penalized_lda_cv(X,y,regs=None, K=None, n_folds=6, folds=None):
         Ks = [i for i in range(1,len(set(y)))]
         err = np.zeros((len(folds),len(regs),len(Ks)))
         nonzero_betas = np.zeros((len(folds),len(regs),len(Ks)))
-        for (i_fold, (tr,val)) in enumerate(folds)
+        for (i_fold, (tr,val)) in enumerate(folds):
             print('fold',i_fold)
             Xtr = X[tr,:]
             ytr = y[tr]
