@@ -15,12 +15,15 @@ def within_class_sds(X,y):
     return(within_class_sds)
     # give every feature mean zero and within-class standard deviation of 1
 
-def factor_to_integer(y):
-    assert type(y) is np.ndarray, 'y is not a numpy array'
+def factor_to_integer(y, verbose=False):
+    assert isinstance(y, np.ndarray), 'y is not a numpy array'
     y_new = np.zeros_like(y,dtype=int)
     classes = sorted(set(y))
     for (i_cl,cl) in enumerate(classes):
         y_new[y==cl]=i_cl
+    if verbose:
+        print('Classes are denoted as follows:')
+        print([(i,j) for (i,j) in enumerate(classes)])
     return y_new
 
 def get_centroids(X,y):
@@ -66,6 +69,8 @@ class DivergingError(Exception):
     
 def penalized_pca(X,reg,K,max_iter=20):
     n,p = X.shape
+    if not (0 < K < p):
+        raise ValueError('K must be an integer in the range 0<k<n_parameters')
     
     betas = np.zeros((p,K))
        
@@ -97,7 +102,7 @@ def penalized_pca(X,reg,K,max_iter=20):
     return(betas)
 
 def one_hot(y):
-    if (type(y) is not np.ndarray) or (len(y.shape)!=1):
+    if (not isinstance(y, np.ndarray)) or (len(y.shape)!=1):
         raise ValueError('y must be a 1D numpy array')
     y = factor_to_integer(y)
     y_new = np.zeros((len(y),len(set(y))))
@@ -111,6 +116,59 @@ def get_fold_indices(filename='/home/ryan/ml/dm/folds_new.csv'):
     return(folds)
 
 class PenalizedLDA:
+    ''' Penalized Linear Discriminant Analysis.
+    Penalized Linear Discriminant Analysis (LDA) is a classifier that finds 
+    sparse discrminant vectors, which are used in the setting where the number 
+    of parameters is far more than the number of training examples.
+
+    The method is described in Witten, Daniela M., and Robert Tibshirani. 
+    "Penalized classification using Fisher's linear discriminant." Journal of 
+    the Royal Statistical Society: Series B (Statistical Methodology) 73.5 
+    (2011): 753-772. Further information is available at:
+    http://faculty.washington.edu/dwitten/Papers/JRSSBPenLDA.pdf
+    https://github.com/cran/penalizedLDA/blob/master/R/PenalizedLDA.R
+
+
+    Parameters
+    ----------
+
+    reg: float, default = None
+        The regularization parameter, lambda. Higher values give a more sparse 
+        solution.
+
+    K: int, default = None
+        The number of discriminant vectors used for classification. K must be 
+        less than the number of label classes.
+
+    max_iter: int, default = 20
+        The number of iterations performed in the minorization procedure used
+        to compute the discriminant vectors.
+
+
+    Attributes
+    ----------
+
+    self.discrim_: array, shape = (n_features, K, where K is number of 
+    discriminant vectors)
+        The discriminant vectors used to project the data.
+
+    self.Xtr_proj_: array, shape = (n_examples, K, where K is the number of 
+    discriminant vectors)
+        The projection of the training dataset.
+
+    self.ytr_: array, shape = (n_examples,)
+        The training labels (which are split further for cross-validation)
+
+
+    Notes
+    ----------
+    The algorithm used relies on the fact that Penalized latent discriminant analysis is 
+    equivalent to sparse principal component analysis on the between-class covariance 
+    matrix, given that the data have already been normalized to have within-class
+    covariance of one.
+
+
+    '''
     def __init__(self,reg = None, K = None, max_iter = 20):        
         self.reg = reg
         self.K = K
@@ -164,90 +222,214 @@ class PenalizedLDA:
     def error(self,Xte,yte,k=None,standardized=False):
         if yte.dtype != int:
             raise ValueError('yte must be an array of integers')
+        if len(yte)!= len(Xte):
+            raise ValueError('Xte and yte must have same number of examples')
         err = (self.predict(Xte, k=k, standardized=standardized)!=yte).sum()
         return(err)
     def __repr__(self):
         return "Penalized LDA(reg=%s, K=%s, max_iter=%s)" % (self.reg, self.K, self.max_iter)
 
-def penalized_lda_cv(X,y,regs=None, K=None, n_folds=6, folds=None):
-    if folds is None:
-        folds = StratifiedKFold(y,n_folds)
-    if y.dtype != int:
-        raise ValueError('y must be an array of integers')
-    if regs is None:
-        regs = np.logspace(.1,10,5)
-        
-    # if only one K value needs to be used
-    if K is not None or len(set(y))==2:
-        if len(set(y))==2:
-            K = 1
-        err = np.zeros((len(folds),len(regs)))
-        nonzero_betas = np.zeros((len(folds),len(regs)))
-        
-        for (i_fold, (tr,val)) in enumerate(folds):
-            print('fold',i_fold)
-            Xtr = X[tr,:]
-            ytr = y[tr]
-            Xval = X[val,:]
-            yval = y[val]
-            
-            # scale data using mean and within-class standard deviation from training set
-            wcsds = within_class_sds(Xtr,ytr)
-            if 0 in wcsds:
-                raise ValueError('Some features have 0 within-class standard deviation')
-            else:
-                means = Xtr.mean(axis=0)
-                Xtr = (Xtr - means) / wcsds
-                Xval = (Xval - means) / wcsds
-            
-            for (i_reg, reg) in enumerate(regs):
-                print('lambda',reg)
-                discrim = penalized_lda_fit(Xtr,ytr,reg,K=K,standardized=True)[1]
-                y_pred = lda_predict(Xtr,ytr,Xval,discrim,K)
-                print('predicted y:')
-                print(y_pred)
-                err[i_fold,i_reg] = (y_pred!=yval).sum()
-                nonzero_betas[i_fold,i_reg] = (discrim!=0).any(axis=1).sum(axis=0)
-        err_mean = err.mean(axis=0)
-        nonzero_mean = nonzero_betas.mean(axis=0)
-        reg_best = regs[err_mean.argmin()]
-        return(err_mean, nonzero_mean, reg_best, K,nonzero_betas,err)
+class PenalizedLDACV:
+    ''' Penalized Linear Discriminant Analysis with Cross-validation
+    PenalizedLDACV randomly splits the given data into training and cross-
+    validation sets and uses these to create a cross-validated PenalizedLDA 
+    classifier. Using these parameters, the classifier is trained on all of the
+    given data. Afterwards, it is used to predict test data.
+
+    As it is a form of Penalized Linear Discriminant Analysis (LDA), it 
+    selects sparse discriminant vectors, and is useful in the setting where
+    number of parameters is far more than the number of training examples.
+
+    Penalized LDA is described further in Witten, Daniela M., and Robert 
+    Tibshirani. "Penalized classification using Fisher's linear discriminant." 
+    Journal of the Royal Statistical Society: Series B (Statistical Methodology) 
+    73.5 (2011): 753-772. Further information is available at:
+    http://faculty.washington.edu/dwitten/Papers/JRSSBPenLDA.pdf
+    https://github.com/cran/penalizedLDA/blob/master/R/PenalizedLDA.R
+
+    Parameters
+    ----------
+
+    regs: list, default = None
+        The regularization parameters, lambda. Cross-validation is performed
+        to select the best value.
+
+    Ks: list, default = None
+        The number of discriminant vectors that can be used for classification. 
+        Cross-validation is performed to select the best value. The K values 
+        must be less than the number of label classes.
+
+    max_iter: int, default = 20
+        The number of iterations performed in the minorization procedure used
+        to compute the discriminant vectors.
+
+    Attributes
+    ----------
+    self.K_selected: int
+        The value of K selected by cross-validation, and used to train the 
+        final model.
+
+    self.reg_selected: float
+        The value of the regularization parameter (lambda) selected by cross-
+        validation, and used to train the final model.
+
+    self.err_: array, shape = (n_folds, len(regs)) or (n_folds, n_regs, n_Ks)
+        The number of errors in each iteration of cross-validation. Three 
+        dimensions are used if cross-validation is performed over multiple K
+        values.
+
+    self.nonzero_betas: array, shape = (n_folds, len(regs)) or (n_folds, n_regs, 
+    n_Ks)
+        The number of nonzero parameters in each iteration of cross-validation. 
+        Three dimensions are used if cross-validation is performed over multiple 
+        K values.
+
+    self.wcsds_: array, shape = (n_parameters,)
+        The within-class standard deviation for each parameter in the training
+        set.
+
+    self.means_: array, shape = (n_parameters,)
+        The mean of each parameter in the training set.
+
+    self.train_err_mean: array, shape = (n_regs,) or (n_regs, n_Ks)
+        The mean error across training folds, for different hyperparameter 
+        values. This matrix is used to select the hyperparameters. If 
+        cross-validation is performed over multiple K values, then a 
+        two-dimensional array is used.
+
+    self.X_proj_: array, shape = (n_examples, K_selected)
+        The projection of the X values used in cross-validated training, using
+        the top K discriminant vectors.
+
+    self.y_: array, shape = (n_examples,)
+        The y values used in cross-validated training.
     
-    # if it is necessary to cross-validate over K values
-    else:
-        Ks = [i for i in range(1,len(set(y)))]
-        err = np.zeros((len(folds),len(regs),len(Ks)))
-        nonzero_betas = np.zeros((len(folds),len(regs),len(Ks)))
-        for (i_fold, (tr,val)) in enumerate(folds):
-            print('fold',i_fold)
-            Xtr = X[tr,:]
-            ytr = y[tr]
-            Xval = X[val,:]
-            yval = y[val]
-            
-            # scale data using mean and within-class standard deviation from training set
-            wcsds = within_class_sds(Xtr,ytr)
-            if 0 in wcsds:
-                raise ValueError('Some features have 0 within-class standard deviation')
-            else:
-                means = Xtr.mean(axis=0)
-                Xtr = (Xtr - means) / wcsds
-                Xval = (Xval - means) / wcsds
-            
-            for (i_reg, reg) in enumerate(regs):
-                print('lambda',reg)
-                discrim = penalized_lda_fit(Xtr,ytr,reg,K=max(Ks),
-                                                standardized=True)[1]
-                for i_k,k in enumerate(Ks):
-                    ypred = lda_predict(Xtr,ytr,Xval,discrim,k)
-                    print('predicted y:')
-                    print(ypred)
-                    err[i_fold,i_reg,i_k] = (ypred!=yval).sum()
-                    nonzero_betas[i_fold,i_reg,i_k] = discrim[:,:k].any(axis=1).sum(axis=0)
     
-        err_mean = err.mean(axis=0)
-        nonzero_mean = nonzero_betas.mean(axis=0)
-        i_best_params = np.unravel_index(err_mean.argmin(),err_mean.shape)
-        reg_best = regs[i_best_params[0]]
-        K_best = Ks[i_best_params[1]]
-        return(err_mean, nonzero_mean, reg_best, K_best,nonzero_betas,err)
+    '''
+
+    def __init__(self, regs = None, Ks = None, max_iter = 20):
+        self.regs = regs
+        self.Ks = Ks
+        self.max_iter = max_iter
+        self.K_selected_ = None
+        self.reg_selected_ = None
+    def fit(self,X,y,standardized=False,n_folds=5,folds=None):
+        if folds is None:
+            folds = StratifiedKFold(y,n_folds)
+        if y.dtype != int:
+            raise ValueError('y must be an array of integers')
+        if self.regs is None:
+            self.regs = np.logspace(.1,10,5)
+        if self.Ks is None: 
+            self.Ks = [i for i in range(1,len(set(y)))]
+        else:
+            if (not (isinstance(self.Ks, list))) or (not any([isinstance(i,int) for i in self.Ks])):
+                raise ValueError('Ks must be a list of integers')
+            if (np.array(self.Ks) >= len(set(y))).any():
+                raise ValueError('K must be less than the number of unique classes')
+
+        # if only one K value needs to be used
+        if len(self.Ks) == 1:
+            self.K_selected_ = self.Ks[0]
+            self.err_ = np.zeros((len(folds),len(self.regs)))
+            self.nonzero_betas_ = np.zeros((len(folds),len(self.regs)))
+
+            for (i_fold, (tr,val)) in enumerate(folds):
+                print('fold',i_fold+1)
+                Xtr = X[tr,:]
+                ytr = y[tr]
+                Xval = X[val,:]
+                yval = y[val]
+
+                # compute mean and within-class SD from training fold, then scale data
+                self.wcsds_ = within_class_sds(Xtr,ytr)
+                
+                if 0 in self.wcsds_:
+                    raise ValueError('Some features have 0 within-class standard deviation')
+                else:
+                    self.means_ = Xtr.mean(axis=0)
+                    Xtr = (Xtr - self.means_) / self.wcsds_
+                    Xval = (Xval - self.means_) / self.wcsds_
+                    
+                # the clf classifier is trained with each regularisation parameter
+                clf = PenalizedLDA(K = self.K_selected_)
+                for (i_reg, reg) in enumerate(self.regs):
+                    print('lambda',reg)
+                    clf.reg = reg
+                    clf.fit(Xtr,ytr,standardized=True)
+                    self.nonzero_betas_[i_fold,i_reg] = (clf.discrim_[:,:self.K_selected_]
+                                                        ).any(axis=1).sum(axis=0)
+                    self.err_[i_fold,i_reg] = clf.error(Xval,yval,standardized=True)
+                    
+            self.train_err_mean_ = self.err_.mean(axis=0)
+            self.reg_selected_ = self.regs[self.train_err_mean_.argmin()]
+            
+        # if it is necessary to cross-validate over K values
+        else:
+            self.err_ = np.zeros((len(folds),len(self.regs),len(self.Ks)))
+            self.nonzero_betas_ = np.zeros((len(folds),len(self.regs),len(self.Ks)))
+            for (i_fold, (tr,val)) in enumerate(folds):
+                print('fold',i_fold+1)
+                Xtr = X[tr,:]
+                ytr = y[tr]
+                Xval = X[val,:]
+                yval = y[val]
+
+                # scale X using mean and within-class standard deviation from training set
+                self.wcsds_ = within_class_sds(Xtr,ytr)
+                if 0 in self.wcsds_:
+                    raise ValueError('Some features have 0 within-class standard deviation')
+                else:
+                    self.means_ = Xtr.mean(axis=0)
+                    Xtr = (Xtr - self.means_) / self.wcsds_
+                    Xval = (Xval - self.means_) / self.wcsds_
+                
+                # the clf classifier is trained with each combination of hyperparameters
+                clf = PenalizedLDA(K=max(self.Ks))
+                for (i_reg, reg) in enumerate(self.regs):
+                    print('lambda',reg)
+                    clf.reg = reg
+                    clf.fit(Xtr,ytr,standardized=True)
+                    for i_k,k in enumerate(self.Ks):
+                        self.err_[i_fold,i_reg,i_k] = clf.error(Xval,yval,k=k,standardized=True)
+                        self.nonzero_betas_[i_fold,i_reg,i_k] = (clf.discrim_[:,:k]
+                                                                ).any(axis=1).sum(axis=0)
+
+            self.train_err_mean_ = self.err_.mean(axis=0)
+            i_best_params = np.unravel_index(self.train_err_mean_.argmin(),self.train_err_mean_.shape)
+            self.reg_selected_ = self.regs[i_best_params[0]]
+            self.K_selected_ = self.Ks[i_best_params[1]]
+            
+        # refit model with selected parameters
+        selected_model = PenalizedLDA(reg=self.reg_selected_,K=self.K_selected_)
+        selected_model.fit(X,y)
+        self.discrim_selected_ = selected_model.discrim_
+        self.nonzero_ = self.discrim_selected_.any(axis=1).sum(axis=0)
+        self.X_proj_ = selected_model.Xtr_proj_
+        self.y_ = y
+        return(self)
+
+    def predict(self,Xte,standardized=False,k=None):
+        if not standardized:
+            #set mean to zero and within-class variance to one
+            Xte = (Xte-self.means_)/self.wcsds_
+
+        #project to dimensionality k using discriminant
+        Xte_projected = Xte.dot(self.discrim_selected_[:,:k])
+
+        #predict class as nearest centroid in projected space
+        y_predicted = classify(self.X_proj_[:,:k],self.y_,Xte_projected)
+
+        return(y_predicted)
+    def error(self,Xte,yte,k=None, standardized=False):
+        if yte.dtype != int:
+            raise ValueError('yte must be an array of integers')
+        if len(yte)!= len(Xte):
+            raise ValueError('Xte and yte must have same number of examples')
+        err = (self.predict(Xte,k=k,standardized=standardized)!=yte).sum()
+        return(err)
+    def __repr__(self):
+        return(('Penalized LDA(regs={regs}, Ks={Ks}, max_iter={max_iter}, self.K_selected_='+
+               '{K_selected_}, self.reg_selected_={reg_selected_})').format(
+                regs=self.regs, Ks=self.Ks, max_iter=self.max_iter, 
+                K_selected_=self.K_selected_, reg_selected_=self.reg_selected_))
