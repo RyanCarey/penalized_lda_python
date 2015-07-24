@@ -4,19 +4,15 @@ import scipy
 from sklearn.cross_validation import StratifiedKFold
 import matplotlib.pyplot as plt
 
-def within_class_sds(X,y):
-    # gets within-class standard deviations for each column
-    n,p = X.shape
-    classes = sorted(set(y))
-    centroids = get_centroids(X,y)
-    y_integer = [np.where(np.array(classes)==i)[0][0] for i in y]
-    deviations = X - np.array([centroids[i] for i in y_integer])  
-    within_class_sds = np.sqrt((deviations**2).mean(axis=0))
-    return(within_class_sds)
-    # give every feature mean zero and within-class standard deviation of 1
-
+class DivergingError(Exception):
+    def __init__(self, msg):
+        self.msg = msg
+    def __str__(self):
+        return repr(self.msg)
+    
 def factor_to_integer(y, verbose=False):
-    assert isinstance(y, np.ndarray), 'y is not a numpy array'
+    # converts an array of labels into integers
+    assert isinstance(y, np.ndarray), 'y must be a numpy array'
     y_new = np.zeros_like(y,dtype=int)
     classes = sorted(set(y))
     for (i_cl,cl) in enumerate(classes):
@@ -27,12 +23,25 @@ def factor_to_integer(y, verbose=False):
     return y_new
 
 def get_centroids(X,y):
+    # creates an (n_classes x n_parameters) matrix of centroids
     classes = sorted(set(y))
     centroids = np.array([X[y==cl,].mean(axis=0) for cl in classes]) 
     return(centroids)   
 
+def within_class_sds(X,y):
+    # computes within-class standard deviation for each column
+    n,p = X.shape
+    classes = sorted(set(y))
+    centroids = get_centroids(X,y)
+    y_integer = [np.where(np.array(classes)==i)[0][0] for i in y]
+    deviations = X - np.array([centroids[i] for i in y_integer])  
+    within_class_sds = np.sqrt((deviations**2).mean(axis=0))
+    return(within_class_sds)
+    # give every feature mean zero and within-class standard deviation of 1
+
 def classify(Xtr,ytr,Xte):
-    # classifies each example in Xte to the nearest centroid
+    # classifies each example in Xte to the likeliest centroid, taking into
+    # account squared distance and a prior based on test-set frequency.
     classes = sorted(set(ytr))
     prior = np.array([(ytr==k).mean() for k in classes])
     centroids = get_centroids(Xtr,ytr)
@@ -61,13 +70,44 @@ def rectifier(a):
 def soft_threshold(a,c):
     return(np.sign(a)*rectifier(abs(a)-c))
 
-class DivergingError(Exception):
-    def __init__(self, msg):
-        self.msg = msg
-    def __str__(self):
-        return repr(self.msg)
-    
 def penalized_pca(X,reg,K,max_iter=20):
+    ''' Penalized Principal Component Analysis
+    Penalized Principal Component Analysis (Penalized PCA) computes a rank-K approximation
+    for a matrix X. The matrix is approximated by \sum_k=1^K d_k u_k v_k^T, with an L1
+    penalty applied to v_k but not to v_u. The optimization is performed using a minorization
+    approach.
+
+    Arguments
+    ----------
+
+    X: array
+        The matrix to be decomposed
+
+    reg: float 
+        The regularization parameter, lambda. A higher value will produce a more sparse solution.
+
+    K: int
+        The rank of the approximation for X
+
+    max_iter, default=20:
+        The number of iterations taken to optimize this approximation.
+
+
+    Returns
+    ---------
+    betas: the v value from the matrix decomposition is returned.
+
+    
+    Notes
+    ---------
+    The penalized matrix decomposition and its application to sparse PCA are 
+    described in Witten, Daniela M., Robert Tibshirani, and Trevor Hastie. "A 
+    penalized matrix decomposition, with applications to sparse principal 
+    components and canonical correlation analysis." Biostatistics (2009): kxp008.
+
+    at http://biostatistics.oxfordjournals.org/content/early/2009/04/17/biostatistics.kxp008.full
+
+    '''
     n,p = X.shape
     if not (0 < K < p):
         raise ValueError('K must be an integer in the range 0<k<n_parameters')
@@ -75,7 +115,6 @@ def penalized_pca(X,reg,K,max_iter=20):
     betas = np.zeros((p,K))
        
     for k in range(K):
-        
         if k>0:
             U_a, d_a, V_a = np.linalg.svd(X.dot(betas))
             u = U_a[:,d_a>(1e-10)]  #left singular vectors with nonzero singular values
@@ -101,7 +140,10 @@ def penalized_pca(X,reg,K,max_iter=20):
         raise NotConvergingError('Utility is decreasing')            
     return(betas)
 
+
 def one_hot(y):
+    # converts an integer array into an n_examples x k boolean matrix where
+    # k is the number of classes, and each row has one-hot encoding.
     if (not isinstance(y, np.ndarray)) or (len(y.shape)!=1):
         raise ValueError('y must be a 1D numpy array')
     y = factor_to_integer(y)
@@ -109,11 +151,6 @@ def one_hot(y):
     y_new[range(len(y)),y] = 1
     return(y_new)
 
-def get_fold_indices(filename='/home/ryan/ml/dm/folds_new.csv'):
-    folds = pd.read_csv(filename,index_col=0)
-    folds = np.array(folds_dat).T
-    folds = [(i[~np.isnan(i)]-1).astype(int) for i in folds]
-    return(folds)
 
 class PenalizedLDA:
     ''' Penalized Linear Discriminant Analysis.
@@ -203,6 +240,7 @@ class PenalizedLDA:
         return(self)
 
     def predict(self,Xte,standardized=False,k=None):
+        # predict y values for the given Xte
         if k!=None and k>self.K:
             raise ValueError('number of dimensions used for classification (k) must be '+ 
                      'less than or equal to the dimensionality of the projection (K)')
@@ -213,13 +251,14 @@ class PenalizedLDA:
             #set mean to zero and within-class variance to one
             Xte = (Xte-self.means_)/self.wcsds_
 
-        #project to dimensionality k using discriminant
+        # project test examples to dimensionality k using discriminant
         Xte_projected = Xte.dot(self.discrim_[:,:k])
 
-        #predict class as nearest centroid in projected space
+        # predict class as likeliest centroid in projected space
         y_predicted = classify(self.Xtr_proj_[:,:k],self.ytr_,Xte_projected)
         return(y_predicted)
     def error(self,Xte,yte,k=None,standardized=False):
+        # the count of errors in the prediction made using Xte
         if yte.dtype != int:
             raise ValueError('yte must be an array of integers')
         if len(yte)!= len(Xte):
@@ -314,6 +353,9 @@ class PenalizedLDACV:
         self.K_selected_ = None
         self.reg_selected_ = None
     def fit(self,X,y,standardized=False,n_folds=5,folds=None):
+        # fits the classifier on each fold, and then uses the best hyperparameters to fit
+        # the model to all examples.
+
         if folds is None:
             folds = StratifiedKFold(y,n_folds)
         if y.dtype != int:
@@ -410,6 +452,7 @@ class PenalizedLDACV:
         return(self)
 
     def predict(self,Xte,standardized=False,k=None):
+        # predict y values for the given Xte using the selected model
         if not standardized:
             #set mean to zero and within-class variance to one
             Xte = (Xte-self.means_)/self.wcsds_
@@ -422,6 +465,7 @@ class PenalizedLDACV:
 
         return(y_predicted)
     def error(self,Xte,yte,k=None, standardized=False):
+        # the count of errors in the prediction made using Xte
         if yte.dtype != int:
             raise ValueError('yte must be an array of integers')
         if len(yte)!= len(Xte):
