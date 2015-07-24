@@ -361,7 +361,7 @@ class PenalizedLDACV:
         if y.dtype != int:
             raise ValueError('y must be an array of integers')
         if self.regs is None:
-            self.regs = np.logspace(.1,10,5)
+            self.regs = np.logspace(-3,-1,3)
         if self.Ks is None: 
             self.Ks = [i for i in range(1,len(set(y)))]
         else:
